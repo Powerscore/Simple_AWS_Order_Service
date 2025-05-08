@@ -40,16 +40,4 @@ This project implements an event-driven backend system for a simplified e-commer
 ### 4. Subscribe Queue to SNS Topic
 - Subscribe `OrderQueue` to `OrderTopic`.
 - Ensure `OrderQueue` policy allows SNS to send messages:
-```json
-{
-  "Sid": "Allow-SNS-SendMessage",
-  "Effect": "Allow",
-  "Principal": { "AWS": "*" },
-  "Action": "SQS:SendMessage",
-  "Resource": "arn:aws:sqs:REGION:ACCOUNT_ID:OrderQueue",
-  "Condition": {
-    "ArnEquals": {
-      "aws:SourceArn": "arn:aws:sns:REGION:ACCOUNT_ID:OrderTopic"
-    }
-  }
-}
+

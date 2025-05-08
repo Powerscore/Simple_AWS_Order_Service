@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Event-driven order processing system with SNS, SQS, Lambda, and DynamoDB.
+
+Resources:
+
+  LatestOrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: LatestOrders
+      AttributeDefinitions:
+        - AttributeName: orderId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: orderId
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  LatestOrderTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: LatestOrderTopic
+
+  LatestOrderQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: LatestOrderQueue
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt LatestOrderDLQ.Arn
+        maxReceiveCount: 3
+
+  LatestOrderDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: LatestOrderDLQ
+
+  LatestOrderQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref LatestOrderQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: sqs:SendMessage
+            Resource: !GetAtt LatestOrderQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref LatestOrderTopic
+
+  LatestSNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref LatestOrderTopic
+      Protocol: sqs
+      Endpoint: !GetAtt LatestOrderQueue.Arn
+      RawMessageDelivery: true
+
+  LatestLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LatestOrderProcessorLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LatestOrderLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt LatestOrdersTable.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt LatestOrderQueue.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  LatestOrderProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: LatestOrderProcessor
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt LatestLambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, PutItemCommand } = require("@aws-sdk/client-dynamodb");
+          const client = new DynamoDBClient({});
+          exports.handler = async (event) => {
+            for (const record of event.Records) {
+              const message = JSON.parse(record.body);
+              const { orderId, userId, itemName, quantity, status, timestamp } = message;
+              const params = new PutItemCommand({
+                TableName: "LatestOrders",
+                Item: {
+                  orderId:   { S: orderId },
+                  userId:    { S: userId },
+                  itemName:  { S: itemName },
+                  quantity:  { N: quantity.toString() },
+                  status:    { S: status },
+                  timestamp: { S: timestamp },
+                  createdAt: { S: new Date().toISOString() },
+                },
+              });
+              await client.send(params);
+            }
+            return { statusCode: 200, body: "Processed" };
+          };
+
+  LatestOrderQueueEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 1
+      EventSourceArn: !GetAtt LatestOrderQueue.Arn
+      FunctionName: !Ref LatestOrderProcessorFunction
+      Enabled: true
+
+Outputs:
+  TopicArn:
+    Description: SNS Topic ARN
+    Value: !Ref LatestOrderTopic
+  QueueURL:
+    Description: SQS Queue URL
+    Value: !Ref LatestOrderQueue
+  LambdaFunction:
+    Description: Lambda function name
+    Value: !Ref LatestOrderProcessorFunction

@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Event-driven order processing system with SNS, SQS, Lambda, and DynamoDB.
+
+Resources:
+
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Orders
+      AttributeDefinitions:
+        - AttributeName: orderId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: orderId
+          KeyType: HASH
+      BillingMode: PAYPERREQUEST
+
+  OrderTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: OrderTopic
+
+  OrderQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: OrderQueue
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrderDLQ.Arn
+        maxReceiveCount: 3
+
+  OrderDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: OrderDLQ
+
+  OrderQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref OrderQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: SQS:SendMessage
+            Resource: !GetAtt OrderQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref OrderTopic
+
+  SNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref OrderTopic
+      Protocol: sqs
+      Endpoint: !GetAtt OrderQueue.Arn
+      RawMessageDelivery: true
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: OrderProcessorLambdaRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: OrderLambdaPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt OrdersTable.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt OrderQueue.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  OrderProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: OrderProcessor
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, PutItemCommand } = require("@aws-sdk/client-dynamodb");
+          const client = new DynamoDBClient({});
+          exports.handler = async (event) => {
+            for (const record of event.Records) {
+              const message = JSON.parse(record.body);
+              const { orderId, userId, itemName, quantity, status, timestamp } = message;
+              const params = new PutItemCommand({
+                TableName: "Orders",
+                Item: {
+                  orderId:   { S: orderId },
+                  userId:    { S: userId },
+                  itemName:  { S: itemName },
+                  quantity:  { N: quantity.toString() },
+                  status:    { S: status },
+                  timestamp: { S: timestamp },
+                  createdAt: { S: new Date().toISOString() },
+                },
+              });
+              await client.send(params);
+            }
+            return { statusCode: 200, body: "Processed" };
+          };
+
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OrderQueue.Arn
+
+Outputs:
+  TopicArn:
+    Description: SNS Topic ARN
+    Value: !Ref OrderTopic
+  QueueURL:
+    Description: SQS Queue URL
+    Value: !Ref OrderQueue
+  LambdaFunction:
+    Description: Lambda function name
+    Value: !Ref OrderProcessorFunction

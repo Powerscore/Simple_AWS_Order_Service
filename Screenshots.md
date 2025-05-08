@@ -8,3 +8,5 @@
 ![image](https://github.com/user-attachments/assets/58f5e1ee-03fe-478f-9567-20ab880ed484)
 # DynamoDB table with inserted items
 ![DynamoDB table with inserted items](https://github.com/user-attachments/assets/95ade0cc-d246-4a1f-9d9a-d1c11a4dbdcb)
+# Cloudformation
+![image](https://github.com/user-attachments/assets/377c502b-0f81-4c1d-a522-0d02d450e04c)
